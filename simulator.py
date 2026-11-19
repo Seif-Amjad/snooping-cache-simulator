@@ -196,3 +196,69 @@ class SharedBus:
 
     def write_back_to_memory(self, variable, value):
         self.memory.write(variable, value)
+
+
+@dataclass
+class TraceRow:
+    """Values and states captured after one operation."""
+
+    event: str
+    memory: dict
+    caches: dict
+
+
+class CoherenceSimulator:
+    """Execute operations under the selected coherence protocol."""
+
+    def __init__(self, config):
+        self.protocol = config.protocol
+        self.operations = config.operations
+        self.memory = MainMemory(config.memory)
+        self.caches = {name: Cache(name) for name in config.processors}
+        self.bus = SharedBus(self.caches.values(), self.memory)
+        self.trace = [self.snapshot("Initial State")]
+
+    def snapshot(self, event):
+        return TraceRow(event, dict(self.memory.storage), {
+            name: {tag: (block.value, block.state) for tag, block in cache.blocks.items()}
+            for name, cache in self.caches.items()
+        })
+
+    def step(self, operation):
+        cache = self.caches[operation.processor]
+        variable = operation.variable
+        block = cache.read(variable)
+        hit = block is not None
+        if operation.action == "Read":
+            event = f"reads {variable} (Read-{'Hit' if hit else 'Miss'})"
+        elif operation.action == "Write":
+            verb = "updates" if hit else "writes"
+            event = f"{verb} {variable} (W-{'Hit' if hit else 'Miss'})"
+        else:
+            event = f"replaces {variable} (Replace)"
+
+        handlers = {Protocol.WRITE_INVALIDATE_WRITE_THROUGH: self.write_through}
+        handlers[self.protocol](cache, operation, block)
+        row = self.snapshot(f"{operation.processor} {event}")
+        self.trace.append(row)
+        return row
+
+    def run_all(self):
+        for operation in self.operations[len(self.trace) - 1:]:
+            self.step(operation)
+        return self.trace
+
+    def write_through(self, cache, operation, block):
+        variable = operation.variable
+        if operation.action == "Replace":
+            cache.replace(variable)
+        elif operation.action == "Read":
+            if block is None:
+                value = self.bus.broadcast_read(cache, variable)
+                cache.write(variable, value, State.VALID)
+        else:
+            if block is None:
+                self.bus.broadcast_read(cache, variable)
+            self.bus.broadcast_invalidate(cache, variable)
+            self.memory.write(variable, operation.value)
+            cache.write(variable, operation.value, State.VALID)
