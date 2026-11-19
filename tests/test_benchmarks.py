@@ -14,6 +14,18 @@ P: Write(X, 20)
 Q: Read(X)
 """
 
+BENCHMARK_2 = """MEMORY: X=10, Z=80
+PROCESSORS: P1, P2, P3
+P1: Read(X)
+P2: Read(X)
+P3: Read(X)
+P1: Write(X, 35)
+P1: Read(Z)
+P2: Read(X)
+P3: Write(X, 15)
+P1: Write(Z, 81)
+"""
+
 
 def simulate(protocol, benchmark):
     config = load_input(f"PROTOCOL: {protocol}\n{benchmark}".splitlines())
@@ -23,16 +35,68 @@ def simulate(protocol, benchmark):
 
 
 class BenchmarkTests(unittest.TestCase):
-    def assert_benchmark_1(self, protocol, expected):
-        simulator = simulate(protocol, BENCHMARK_1)
+    def assert_variable_trace(self, simulator, variable, expected):
         actual = []
         for row in simulator.trace:
             copies = []
             for cache in row.caches.values():
-                block = cache.get("X")
+                block = cache.get(variable)
                 copies.append(f"{block[0]} {block[1].value}" if block else "-")
-            actual.append((row.memory["X"], *copies))
-        self.assertEqual(actual, [(5, "-", "-"), *expected])
+            actual.append((row.memory[variable], *copies))
+        self.assertEqual(actual, expected)
+
+    def assert_benchmark_1(self, protocol, expected):
+        self.assert_variable_trace(simulate(protocol, BENCHMARK_1), "X", [(5, "-", "-"), *expected])
+
+    def assert_benchmark_2(self, protocol, x_trace, z_read, z_write, transfers):
+        simulator = simulate(protocol, BENCHMARK_2)
+        self.assert_variable_trace(simulator, "X", [(10, "-", "-", "-"), *x_trace])
+        self.assert_variable_trace(simulator, "Z", [
+            *((80, "-", "-", "-"),) * 5,
+            *((80, z_read, "-", "-"),) * 3,
+            (*z_write, "-", "-"),
+        ])
+        counts = simulator.access_counts
+        self.assertEqual([counts["Read", True], counts["Read", False],
+                          counts["Write", True], counts["Write", False]], [0, 5, 2, 1])
+        bus = simulator.bus
+        self.assertEqual((bus.invalidations, bus.write_backs, bus.write_throughs), transfers)
+
+    def test_benchmark_2_write_through(self):
+        self.assert_benchmark_2("WRITE_INVALIDATE_WRITE_THROUGH", [
+            (10, "10 VALID", "-", "-"),
+            (10, "10 VALID", "10 VALID", "-"),
+            (10, "10 VALID", "10 VALID", "10 VALID"),
+            (35, "35 VALID", "10 INV", "10 INV"),
+            (35, "35 VALID", "10 INV", "10 INV"),
+            (35, "35 VALID", "35 VALID", "10 INV"),
+            (15, "35 INV", "35 INV", "15 VALID"),
+            (15, "35 INV", "35 INV", "15 VALID"),
+        ], "80 VALID", (81, "81 VALID"), (3, 0, 3))
+
+    def test_benchmark_2_write_back(self):
+        self.assert_benchmark_2("WRITE_INVALIDATE_WRITE_BACK", [
+            (10, "10 RO", "-", "-"),
+            (10, "10 RO", "10 RO", "-"),
+            (10, "10 RO", "10 RO", "10 RO"),
+            (10, "35 RW", "10 INV", "10 INV"),
+            (10, "35 RW", "10 INV", "10 INV"),
+            (35, "35 RO", "35 RO", "10 INV"),
+            (35, "35 INV", "35 INV", "15 RW"),
+            (35, "35 INV", "35 INV", "15 RW"),
+        ], "80 RO", (80, "81 RW"), (3, 1, 0))
+
+    def test_benchmark_2_write_once(self):
+        self.assert_benchmark_2("WRITE_ONCE", [
+            (10, "10 VALID", "-", "-"),
+            (10, "10 VALID", "10 VALID", "-"),
+            (10, "10 VALID", "10 VALID", "10 VALID"),
+            (35, "35 RES", "10 INV", "10 INV"),
+            (35, "35 RES", "10 INV", "10 INV"),
+            (35, "35 VALID", "35 VALID", "10 INV"),
+            (35, "35 INV", "35 INV", "15 DIRTY"),
+            (35, "35 INV", "35 INV", "15 DIRTY"),
+        ], "80 VALID", (81, "81 RES"), (3, 0, 2))
 
     def test_benchmark_1_write_through(self):
         self.assert_benchmark_1("WRITE_INVALIDATE_WRITE_THROUGH", [
