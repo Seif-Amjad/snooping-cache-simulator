@@ -42,3 +42,23 @@ P: Replace(X)
         failed = subprocess.run(command, input="invalid\n", text=True, capture_output=True)
         self.assertEqual(failed.returncode, 2)
         self.assertIn("line 1: expected PROTOCOL", failed.stderr)
+
+    def test_summary_counts_benchmark_1_transactions(self):
+        cases = (
+            ("WRITE_INVALIDATE_WRITE_THROUGH", 3, 0, 3, "VALID"),
+            ("WRITE_INVALIDATE_WRITE_BACK", 2, 2, 0, "RO"),
+            ("WRITE_ONCE", 2, 2, 1, "VALID"),
+        )
+        for protocol, invalidations, write_backs, write_throughs, state in cases:
+            with self.subTest(protocol=protocol):
+                simulator = simulate(protocol, BENCHMARK_1)
+                output = io.StringIO()
+                simulator.print_summary(output)
+                self.assertEqual(output.getvalue().strip().splitlines(), [
+                    "Final Summary", "Memory: X=20", f"P: X=20 ({state})",
+                    f"Q: X=20 ({state})", "Read-Hits: 1", "Read-Misses: 3",
+                    "Write-Hits: 2", "Write-Misses: 1",
+                    f"Bus invalidation commands: {invalidations}",
+                    f"Memory write-backs: {write_backs}",
+                    f"Memory write-throughs: {write_throughs}",
+                ])

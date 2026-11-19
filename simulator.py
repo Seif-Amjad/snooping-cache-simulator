@@ -3,6 +3,7 @@
 import argparse
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 
@@ -174,6 +175,9 @@ class SharedBus:
     def __init__(self, caches, memory):
         self.caches = list(caches)
         self.memory = memory
+        self.invalidations = 0
+        self.write_backs = 0
+        self.write_throughs = 0
 
     def peers(self, requester):
         return (cache for cache in self.caches if cache is not requester)
@@ -196,10 +200,16 @@ class SharedBus:
         return owner.value
 
     def broadcast_invalidate(self, requester, variable):
+        self.invalidations += 1
         for cache in self.peers(requester):
             cache.snoop(variable, State.INV)
 
     def write_back_to_memory(self, variable, value):
+        self.write_backs += 1
+        self.memory.write(variable, value)
+
+    def write_through_to_memory(self, variable, value):
+        self.write_throughs += 1
         self.memory.write(variable, value)
 
 
@@ -221,6 +231,7 @@ class CoherenceSimulator:
         self.memory = MainMemory(config.memory)
         self.caches = {name: Cache(name) for name in config.processors}
         self.bus = SharedBus(self.caches.values(), self.memory)
+        self.access_counts = Counter()
         self.trace = [self.snapshot("Initial State")]
 
     def snapshot(self, event):
@@ -248,6 +259,8 @@ class CoherenceSimulator:
             Protocol.WRITE_ONCE: self.write_once,
         }
         handlers[self.protocol](cache, operation, block)
+        if operation.action in ("Read", "Write"):
+            self.access_counts[operation.action, hit] += 1
         row = self.snapshot(f"{operation.processor} {event}")
         self.trace.append(row)
         return row
@@ -269,7 +282,7 @@ class CoherenceSimulator:
             if block is None:
                 self.bus.broadcast_read(cache, variable)
             self.bus.broadcast_invalidate(cache, variable)
-            self.memory.write(variable, operation.value)
+            self.bus.write_through_to_memory(variable, operation.value)
             cache.write(variable, operation.value, State.VALID)
 
     def replace(self, cache, variable, dirty_state):
@@ -311,7 +324,7 @@ class CoherenceSimulator:
                 state = State.DIRTY
             elif block.state is State.VALID:
                 self.bus.broadcast_invalidate(cache, variable)
-                self.memory.write(variable, operation.value)
+                self.bus.write_through_to_memory(variable, operation.value)
                 state = State.RES
             else:
                 state = State.DIRTY
@@ -340,6 +353,25 @@ class CoherenceSimulator:
         rule = "=" * len(table[0])
         print(rule, table[0], rule, *table[1:], rule, sep="\n", file=output)
 
+    def print_summary(self, output=None):
+        """Print final values and the transaction counts."""
+        final = self.trace[-1]
+        print("\nFinal Summary", file=output)
+        memory = ", ".join(f"{tag}={value}" for tag, value in final.memory.items())
+        print(f"Memory: {memory}", file=output)
+        for processor, cache in final.caches.items():
+            copies = []
+            for tag in final.memory:
+                block = cache.get(tag)
+                copies.append(f"{tag}={block[0]} ({block[1].value})" if block else f"{tag}=- (-)")
+            print(f"{processor}: {', '.join(copies)}", file=output)
+        for action in ("Read", "Write"):
+            print(f"{action}-Hits: {self.access_counts[action, True]}", file=output)
+            print(f"{action}-Misses: {self.access_counts[action, False]}", file=output)
+        print(f"Bus invalidation commands: {self.bus.invalidations}", file=output)
+        print(f"Memory write-backs: {self.bus.write_backs}", file=output)
+        print(f"Memory write-throughs: {self.bus.write_throughs}", file=output)
+
 
 def main(argv=None):
     """Run the simulator with a file or standard input."""
@@ -358,6 +390,7 @@ def main(argv=None):
     simulator = CoherenceSimulator(config)
     simulator.run_all()
     simulator.print_trace_table()
+    simulator.print_summary()
 
 
 if __name__ == "__main__":
