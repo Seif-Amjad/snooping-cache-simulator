@@ -44,3 +44,25 @@ class BenchmarkTests(unittest.TestCase):
             (20, "20 VALID", "15 INV"),
             (20, "20 VALID", "20 VALID"),
         ])
+
+    def test_benchmark_1_write_back(self):
+        self.assert_benchmark_1("WRITE_INVALIDATE_WRITE_BACK", [
+            (5, "5 RO", "-"),
+            (5, "5 RO", "5 RO"),
+            (5, "5 INV", "10 RW"),
+            (5, "5 INV", "10 RW"),
+            (5, "5 INV", "15 RW"),
+            (15, "20 RW", "15 INV"),
+            (20, "20 RO", "20 RO"),
+        ])
+
+    def test_write_back_replace_flushes_owner(self):
+        simulator = simulate("WRITE_INVALIDATE_WRITE_BACK", """MEMORY: X=5
+PROCESSORS: P
+P: Read(X)
+P: Write(X, 9)
+P: Replace(X)
+""")
+        self.assertEqual(simulator.trace[-2].memory, {"X": 5})
+        self.assertEqual(simulator.trace[-1].memory, {"X": 9})
+        self.assertEqual(simulator.trace[-1].caches, {"P": {}})

@@ -237,7 +237,10 @@ class CoherenceSimulator:
         else:
             event = f"replaces {variable} (Replace)"
 
-        handlers = {Protocol.WRITE_INVALIDATE_WRITE_THROUGH: self.write_through}
+        handlers = {
+            Protocol.WRITE_INVALIDATE_WRITE_THROUGH: self.write_through,
+            Protocol.WRITE_INVALIDATE_WRITE_BACK: self.write_back,
+        }
         handlers[self.protocol](cache, operation, block)
         row = self.snapshot(f"{operation.processor} {event}")
         self.trace.append(row)
@@ -262,3 +265,23 @@ class CoherenceSimulator:
             self.bus.broadcast_invalidate(cache, variable)
             self.memory.write(variable, operation.value)
             cache.write(variable, operation.value, State.VALID)
+
+    def replace(self, cache, variable, dirty_state):
+        block = cache.replace(variable)
+        if block is not None and block.state is dirty_state:
+            self.bus.write_back_to_memory(variable, block.value)
+
+    def write_back(self, cache, operation, block):
+        variable = operation.variable
+        if operation.action == "Replace":
+            self.replace(cache, variable, State.RW)
+        elif operation.action == "Read":
+            if block is None:
+                value = self.bus.broadcast_read(cache, variable, State.RW, State.RO)
+                cache.write(variable, value, State.RO)
+        else:
+            if block is None:
+                self.bus.broadcast_read(cache, variable, State.RW)
+            if block is None or block.state is State.RO:
+                self.bus.broadcast_invalidate(cache, variable)
+            cache.write(variable, operation.value, State.RW)
