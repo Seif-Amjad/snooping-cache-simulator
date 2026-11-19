@@ -1,6 +1,6 @@
 import unittest
 
-from simulator import CoherenceSimulator, load_input
+from simulator import CoherenceSimulator, State, load_input
 
 
 BENCHMARK_1 = """MEMORY: X=5
@@ -64,5 +64,42 @@ P: Write(X, 9)
 P: Replace(X)
 """)
         self.assertEqual(simulator.trace[-2].memory, {"X": 5})
+        self.assertEqual(simulator.trace[-1].memory, {"X": 9})
+        self.assertEqual(simulator.trace[-1].caches, {"P": {}})
+
+    def test_benchmark_1_write_once(self):
+        self.assert_benchmark_1("WRITE_ONCE", [
+            (5, "5 VALID", "-"),
+            (5, "5 VALID", "5 VALID"),
+            (10, "5 INV", "10 RES"),
+            (10, "5 INV", "10 RES"),
+            (10, "5 INV", "15 DIRTY"),
+            (15, "20 DIRTY", "15 INV"),
+            (20, "20 VALID", "20 VALID"),
+        ])
+
+    def test_write_once_peer_read_breaks_reservation(self):
+        simulator = simulate("WRITE_ONCE", """MEMORY: X=5
+PROCESSORS: P, Q
+P: Read(X)
+P: Write(X, 8)
+Q: Read(X)
+P: Write(X, 9)
+""")
+        self.assertEqual(simulator.trace[-2].caches, {
+            "P": {"X": (8, State.VALID)}, "Q": {"X": (8, State.VALID)},
+        })
+        self.assertEqual(simulator.trace[-1].memory, {"X": 9})
+        self.assertEqual(simulator.trace[-1].caches["Q"]["X"], (8, State.INV))
+
+    def test_write_once_replace_flushes_dirty_copy(self):
+        simulator = simulate("WRITE_ONCE", """MEMORY: X=5
+PROCESSORS: P
+P: Read(X)
+P: Write(X, 8)
+P: Write(X, 9)
+P: Replace(X)
+""")
+        self.assertEqual(simulator.trace[-2].memory, {"X": 8})
         self.assertEqual(simulator.trace[-1].memory, {"X": 9})
         self.assertEqual(simulator.trace[-1].caches, {"P": {}})

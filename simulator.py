@@ -176,12 +176,15 @@ class SharedBus:
     def peers(self, requester):
         return (cache for cache in self.caches if cache is not requester)
 
-    def broadcast_read(self, requester, variable, owner_state=None, shared_state=None):
+    def broadcast_read(self, requester, variable, owner_state=None, shared_state=None,
+                       *, reserved_state=None):
         owner = None
         for cache in self.peers(requester):
             block = cache.snoop(variable)
             if block is not None and block.state is owner_state:
                 owner = block
+            elif block is not None and block.state is reserved_state:
+                block.state = shared_state
         if owner is None:
             return self.memory.read(variable)
         # Flush the old owner's value before the requester can overwrite it.
@@ -240,6 +243,7 @@ class CoherenceSimulator:
         handlers = {
             Protocol.WRITE_INVALIDATE_WRITE_THROUGH: self.write_through,
             Protocol.WRITE_INVALIDATE_WRITE_BACK: self.write_back,
+            Protocol.WRITE_ONCE: self.write_once,
         }
         handlers[self.protocol](cache, operation, block)
         row = self.snapshot(f"{operation.processor} {event}")
@@ -285,3 +289,28 @@ class CoherenceSimulator:
             if block is None or block.state is State.RO:
                 self.bus.broadcast_invalidate(cache, variable)
             cache.write(variable, operation.value, State.RW)
+
+    def write_once(self, cache, operation, block):
+        variable = operation.variable
+        if operation.action == "Replace":
+            self.replace(cache, variable, State.DIRTY)
+        elif operation.action == "Read":
+            if block is None:
+                # A peer read breaks the reservation without flushing a clean copy.
+                value = self.bus.broadcast_read(
+                    cache, variable, State.DIRTY, State.VALID, reserved_state=State.RES
+                )
+                cache.write(variable, value, State.VALID)
+        else:
+            if block is None:
+                # The assignment's write-miss rule flushes the old owner, not the new write.
+                self.bus.broadcast_read(cache, variable, State.DIRTY)
+                self.bus.broadcast_invalidate(cache, variable)
+                state = State.DIRTY
+            elif block.state is State.VALID:
+                self.bus.broadcast_invalidate(cache, variable)
+                self.memory.write(variable, operation.value)
+                state = State.RES
+            else:
+                state = State.DIRTY
+            cache.write(variable, operation.value, state)
