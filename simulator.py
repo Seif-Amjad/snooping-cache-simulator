@@ -136,3 +136,63 @@ def load_input(lines):
             raise ValueError(f"line {number}: unknown variable {variable}")
         operations.append(Operation(processor, action, variable, int(integer) if integer else None))
     return SimulationInput(protocol, memory, processors, operations)
+
+
+class Cache:
+    """Store a private copy of each cached variable."""
+
+    def __init__(self, processor_id):
+        self.processor_id = processor_id
+        self.blocks = {}
+
+    def read(self, variable):
+        block = self.blocks.get(variable)
+        if block is not None and block.state is not State.INV:
+            return block
+        return None
+
+    def write(self, variable, value, state):
+        block = CacheBlock(variable, value, state)
+        self.blocks[variable] = block
+        return block
+
+    def replace(self, variable):
+        return self.blocks.pop(variable, None)
+
+    def snoop(self, variable, new_state=None):
+        block = self.read(variable)
+        if block is not None and new_state is not None:
+            block.state = new_state
+        return block
+
+
+class SharedBus:
+    """Send transactions to all peer caches and access main memory."""
+
+    def __init__(self, caches, memory):
+        self.caches = list(caches)
+        self.memory = memory
+
+    def peers(self, requester):
+        return (cache for cache in self.caches if cache is not requester)
+
+    def broadcast_read(self, requester, variable, owner_state=None, shared_state=None):
+        owner = None
+        for cache in self.peers(requester):
+            block = cache.snoop(variable)
+            if block is not None and block.state is owner_state:
+                owner = block
+        if owner is None:
+            return self.memory.read(variable)
+        # Flush the old owner's value before the requester can overwrite it.
+        self.write_back_to_memory(variable, owner.value)
+        if shared_state is not None:
+            owner.state = shared_state
+        return owner.value
+
+    def broadcast_invalidate(self, requester, variable):
+        for cache in self.peers(requester):
+            cache.snoop(variable, State.INV)
+
+    def write_back_to_memory(self, variable, value):
+        self.memory.write(variable, value)
