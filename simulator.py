@@ -1,6 +1,8 @@
 """Simulate bus-based snooping cache coherence."""
 
+import argparse
 import re
+import sys
 from dataclasses import dataclass
 from enum import Enum
 
@@ -314,3 +316,49 @@ class CoherenceSimulator:
             else:
                 state = State.DIRTY
             cache.write(variable, operation.value, state)
+
+    def print_trace_table(self, output=None):
+        """Print an aligned table of all snapshots, including step zero."""
+        variables = tuple(self.memory.storage)
+        header = ["Serial", "Event", *(f"Mem({tag})" for tag in variables)]
+        for processor in self.caches:
+            for tag in variables:
+                header.extend((f"{processor} Val({tag})", f"{processor} State({tag})"))
+
+        rows = [header]
+        for serial, row in enumerate(self.trace):
+            cells = [str(serial), row.event, *(str(row.memory[tag]) for tag in variables)]
+            for cache in row.caches.values():
+                for tag in variables:
+                    block = cache.get(tag)
+                    cells.extend((str(block[0]), block[1].value) if block else ("-", "-"))
+            rows.append(cells)
+
+        widths = [max(map(len, column)) for column in zip(*rows)]
+        table = [" | ".join(cell.ljust(width) for cell, width in zip(row, widths))
+                 for row in rows]
+        rule = "=" * len(table[0])
+        print(rule, table[0], rule, *table[1:], rule, sep="\n", file=output)
+
+
+def main(argv=None):
+    """Run the simulator with a file or standard input."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", nargs="?", help="input file (default: stdin)")
+    arguments = parser.parse_args(argv)
+    try:
+        if arguments.input is None:
+            config = load_input(sys.stdin)
+        else:
+            with open(arguments.input, encoding="utf-8-sig") as input_file:
+                config = load_input(input_file)
+    except (ValueError, OSError) as error:
+        parser.exit(2, f"error: {error}\n")
+
+    simulator = CoherenceSimulator(config)
+    simulator.run_all()
+    simulator.print_trace_table()
+
+
+if __name__ == "__main__":
+    main()
