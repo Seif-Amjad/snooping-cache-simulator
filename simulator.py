@@ -200,6 +200,7 @@ class SharedBus:
         return owner.value
 
     def broadcast_invalidate(self, requester, variable):
+        # Count the command even when no peer has a copy to invalidate.
         self.invalidations += 1
         for cache in self.peers(requester):
             cache.snoop(variable, State.INV)
@@ -261,7 +262,7 @@ class CoherenceSimulator:
         handlers[self.protocol](cache, operation, block)
         if operation.action in ("Read", "Write"):
             self.access_counts[operation.action, hit] += 1
-        row = self.snapshot(f"{operation.processor} {event}")
+        row = self.snapshot(f"{cache.processor_id} {event}")
         self.trace.append(row)
         return row
 
@@ -355,6 +356,7 @@ class CoherenceSimulator:
 
     def print_summary(self, output=None):
         """Print final values and the transaction counts."""
+        # Report the last operation as-is so dirty owners remain visible.
         final = self.trace[-1]
         print("\nFinal Summary", file=output)
         memory = ", ".join(f"{tag}={value}" for tag, value in final.memory.items())
